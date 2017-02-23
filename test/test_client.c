@@ -13,7 +13,6 @@
 #include <sys/stat.h> 			/* stat */
 #include <sys/fcntl.h>
 
-
 typedef struct ws_buffer {
     unsigned size;
     unsigned pos;
@@ -21,32 +20,22 @@ typedef struct ws_buffer {
 } ws_buffer_t;
 
 
-typedef struct ws_server {
-    char    ip[16];
-    int     port;
-    int     fd;
-    ev_io   accept_ev;
-} ws_server_t;
-
 typedef struct ws_client {
-    char    ip[16];
-    int     port;
-    int     fd;
-    int     status; /* 1 websocket connection, 0 disconnection */
-    ws_buffer_t buf;
-    ev_io   recv_ev;
+    int                 fd;
+    ev_io               recv_w;
+    ws_buffer_t         buf;
+    ws_request_ctx_t    req;
 } ws_client_t;
 
 
 static void _usage(const char *name)
 {
-    printf("%s <ip> <port>\n", name);
+    printf("%s <uri>\n", name);
     exit(0);
 }
 
-static void _recv_shake_hand(EV_P, ev_io *w, int revent);
 
-int _set_noblock(int fd)
+static int _set_noblock(int fd)
 {
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0) {
@@ -63,136 +52,63 @@ int _set_noblock(int fd)
 }
 
 
-static ws_server_t * _new_server(const char *ip, int port)
+static ws_client_t * _new_client(const char *uri)
 {
-    ws_server_t * s = malloc(sizeof(ws_server_t));
-    if (NULL == s) {
+    ws_client_t * wc = malloc(sizeof(ws_client_t));
+    if (NULL == wc) {
         perror("malloc()");
-        goto err_out;
+        return NULL;
     }
 
-    int reuse = 1;
-    struct sockaddr_in addr;
+    if (ws_create_request(&wc->req, uri) != 0) {
+        printf("ws_create_request() failed\n");
+        goto free_mem;
+    }
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         goto free_mem;
     }
 
-    if (setsockopt(fd, SOL_SOCKET,
-                SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt()");
-        goto close_fd;
-    }
-
+    struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(ip);
-    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = inet_addr(wc->req.host);
+    addr.sin_port = htons(wc->req.port);
 
-    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("bind()");
-        goto close_fd;
-    }
-
-    if (listen(fd, 10) < 0) {
-        perror("listen()");
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        perror("connect");
         goto close_fd;
     }
 
     if (_set_noblock(fd) != 0) {
-        perror("_set_noblock()");
+        perror("_set_noblock");
         goto close_fd;
     }
 
-    strncpy(s->ip, ip, sizeof(s->ip));
-    s->port = port;
-    s->fd = fd;
 
-    printf("list %s:%d\n", ip, port);
-    return s;
+    if (write(fd, wc->req.send_str, strlen(wc->req.send_str)) <= 0) {
+        perror("write");
+        goto close_fd;
+    }
+
+    wc->fd = fd;
+    return wc;
 
 close_fd:
     close(fd);
 
 free_mem:
-    free(s);
-
-err_out:
+    free(wc);
     return NULL;
-
-}
-
-
-static ws_client_t * _new_client(int fd, const char *ip, int port)
-{
-    ws_client_t *wc = malloc(sizeof(ws_client_t));
-    if (NULL == wc) {
-       perror("malloc()") ;
-       return wc;
-    }
-    memset(wc, 0, sizeof(ws_client_t));
-    strncpy(wc->ip, ip, sizeof(wc->ip));
-    wc->port = port;
-    wc->fd = fd;
-    return wc;
 }
 
 
 static void _del_client(ws_client_t *wc)
 {
     close(wc->fd);
-    if (wc->buf.data != NULL) {
-        free(wc->buf.data);
-    }
     free(wc);
 }
-
-
-static void _accept_event(EV_P, ev_io *w, int revent)
-{
-    if (revent & EV_ERROR) {
-        printf("_accept_event error\n");
-        return;
-    }
-
-    struct sockaddr_in addr;
-    unsigned int len = sizeof(addr);
-
-#if defined _GUN_SOURCE
-    int fd = accept4(w->fd, (struct sockaddr*)&addr, &len, O_NONBLOCK);
-    if (fd < 0) {
-        perror("accept4(O_NONBLOCK)");
-        return;
-    }
-#else
-    int fd = accept(w->fd, (struct sockaddr*)&addr, &len);
-    if (fd < 0) {
-       perror("accept()");
-       return;
-    }
-
-    if (_set_noblock(fd) != 0) {
-        perror("_set_noblock()");
-        close(fd);
-        return;
-    }
-#endif /* _GUN_SOURCE */
-    ws_client_t *wc;
-    wc = _new_client(fd, inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
-    if (!wc) {
-        close(fd);
-        return;
-    }
-
-    printf("accept %s:%d\n", wc->ip, wc->port);
-    ev_io_init(&wc->recv_ev, _recv_shake_hand, wc->fd, EV_READ);
-    wc->recv_ev.data = wc;
-    ev_io_start(loop, &wc->recv_ev);
-
-    return;
-}
-
 
 
 static void _recv_data(EV_P, ev_io *w, int revent)
@@ -289,8 +205,8 @@ static void _recv_data(EV_P, ev_io *w, int revent)
     return;
 
 close_client:
-    printf("%s:%d connection will be close\n", wc->ip, wc->port);
-    ev_io_stop(loop, &wc->recv_ev);
+    printf("%s:%d connection will be close\n", wc->req.host, wc->req.port);
+    ev_io_stop(loop, &wc->recv_w);
     _del_client(wc);
     return;
 
@@ -318,68 +234,47 @@ static void _recv_shake_hand(EV_P, ev_io *w, int revent)
         }
     }
 
-    buffer[recv_len] = 0;
-    printf("%s\n", buffer);
-
-    ws_handshake_ctx_t r;
-    memset(&r, 0, sizeof(r));
-    int ret = ws_parse_request(&r, buffer);
-    int send_len = write(w->fd, r.send_str, strlen(r.send_str));
-    if (send_len < 0) {
-        perror("write()") ;
-        goto close_client;
-    }
-
+    int ret = ws_parse_response(&wc->req, buffer);
     if (ret != 0) {
-        printf("ws_parse_request filed, %d\n", ret);
+        printf("ws_parse_response failed, %d\n", wc->req.status_code);
     } else {
-        wc->status = 1;
         if ((wc->buf.data = malloc(128)) == NULL) {
             perror("malloc");
         }
-
         wc->buf.size = 128;
         wc->buf.pos = 0;
         ev_io_stop(loop, w);
         ev_io_init(w, _recv_data, w->fd, EV_READ);
         ev_io_start(loop, w);
+        char a[] = {0x11, 0x22, 0x33};
+        int send_len = ws_create_ping_frame((uint8_t*)buffer, 1024, a, 3, 1);
+        write(wc->fd, buffer, send_len);
     }
 
-    printf("%s\n", r.send_str);
-
-    return;
-
 close_client:
-    printf("%s:%d connection will be close\n", wc->ip, wc->port);
-    ev_io_stop(loop, &wc->recv_ev);
+    printf("%s:%d connection will be close\n", wc->req.host, wc->req.port);
+    ev_io_stop(loop, &wc->recv_w);
     _del_client(wc);
     return;
-
 }
 
 
-static void _del_server(ws_server_t *sw)
-{
-    close(sw->fd);
-    free(sw);
-}
+int main (int argc, char *argv[]) {
 
-
-int main (int argc, char *argv[])
-{
-    if (argc != 3) {
+    if (argc != 2) {
         _usage(argv[0]);
     }
 
-    ws_server_t *ws = _new_server(argv[1], atoi(argv[2]));
-    if (NULL == ws) {
+    ws_client_t *wc = _new_client(argv[1]);
+    if (NULL == wc) {
         return -1;
     }
 
     struct ev_loop *loop = ev_loop_new(0);
-    ev_io_init(&ws->accept_ev, _accept_event, ws->fd, EV_READ);
-    ev_io_start(loop, &ws->accept_ev);
+    ev_io_init(&wc->recv_w, _recv_shake_hand, wc->fd, EV_READ);
+    wc->recv_w.data = wc;
+    ev_io_start(loop, &wc->recv_w);
     ev_run(loop, 0);
+
     return 0;
 }
-

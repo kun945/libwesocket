@@ -12,7 +12,7 @@ char test[] = "GET /chat HTTP/1.1\r\n"
     "Sec-WebSocket-Version: 13\r\n\r\n";
 
 int main (void) {
-    ws_request_t r;
+    ws_handshake_ctx_t r;
     memset(&r, 0, sizeof(0));
 
     int ret;
@@ -21,7 +21,7 @@ int main (void) {
     }
 
     printf("%s\n", test);
-    printf("%s\n", r.response);
+    printf("%s\n", r.send_str);
 
     return 0;
 }
