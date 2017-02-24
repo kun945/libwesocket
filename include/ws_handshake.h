@@ -54,7 +54,7 @@ typedef struct ws_request_ctx {
 #define WS_REQUEST_CONNECTION_LEN   12
 
 #define WS_REQUEST_KEY_STR          "Sec-WebSocket-Key: "
-#define WS_REQUEST_KEY_LEN          19
+#define WS_REQUEST_KEY_LEN          22
 
 #define WS_REQUEST_ORIGIN_STR       "Origin: "
 #define WS_REQUEST_ORIGIN_LEN       8

@@ -389,28 +389,18 @@ int ws_parse_response(ws_request_ctx_t *req, char *resp_str)
         token = strtok_r(NULL, "\r\n", &save);
     }
 
-    /* check http version */
-    if (NULL == version ||
-            strcasecmp(version, _HTTP_VERSION_STR)) {
-        return -1;
-    }
-
     /* check upgrade */
     if (NULL == upgrade || strcasecmp(upgrade, _UPGRADE_STR)) {
         return -1;
     }
 
     /* check protocol */
-    if (NULL != protocol) {
-        return -1;
-    }
+    /*if (NULL != protocol) {*/
+        /*return -1;*/
+    /*}*/
 
     /* check websocket version */
-    if (NULL == version) {
-        return -1;
-    }
-
-    if (strcasecmp(version, "13")) {
+    if (NULL != version && strcasecmp(version, "13")) {
         return -1;
     }
 

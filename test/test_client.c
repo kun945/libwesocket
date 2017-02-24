@@ -249,6 +249,10 @@ static void _recv_shake_hand(EV_P, ev_io *w, int revent)
         char a[] = {0x11, 0x22, 0x33};
         int send_len = ws_create_ping_frame((uint8_t*)buffer, 1024, a, 3, 1);
         write(wc->fd, buffer, send_len);
+        ev_io_stop(loop, w);
+        ev_io_init(w, _recv_data, w->fd, EV_READ);
+        ev_io_start(loop, w);
+        return;
     }
 
 close_client:
